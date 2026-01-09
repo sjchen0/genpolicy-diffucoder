@@ -1,0 +1,125 @@
+import torch
+from torch.utils.data import DataLoader
+from transformers import AutoModel, AutoTokenizer, AutoConfig
+from transformers import default_data_collator
+from model.configuration_dream import DreamConfig
+from model.modeling_dream import DreamModel
+from datasets import load_dataset
+from omegaconf import OmegaConf
+from model.policy import PolicyNet
+import losses
+import wandb
+import os
+from datetime import datetime
+import utils
+from data import tokenizer_fn
+
+def load_modified_model_and_tokenizer(cfg):
+    model_path = cfg.pretrained_hf_path
+    model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model = DreamModel(model_config)
+    hf_model = AutoModel.from_pretrained(model_path, torch_dtype=torch.bfloat16, trust_remote_code=True)
+    state_dict = hf_model.state_dict()
+    model.load_state_dict(state_dict, strict=False)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    if cfg.policy.dtype == "bfloat16":
+        model = model.to(torch.bfloat16)
+    return model, tokenizer
+
+def load_model_and_tokenizer(cfg):
+    model_path = cfg.pretrained_hf_path
+    model = AutoModel.from_pretrained(model_path, torch_dtype=torch.bfloat16, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    return model, tokenizer
+
+def run(cfg):
+    work_dir = cfg.work_dir
+    # cfg = OmegaConf.load("configs/config.yaml")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    checkpoint_dir = os.path.join(work_dir, "checkpoints")
+    checkpoint_meta_dir = os.path.join(work_dir, "checkpoints-meta", "checkpoint.pth")
+
+    utils.makedirs(checkpoint_dir)
+    utils.makedirs(os.path.dirname(checkpoint_meta_dir))
+    wandb.init(dir=os.path.abspath(work_dir), project='diffucoder-policy', config=OmegaConf.to_container(cfg, resolve=True), name=cfg.wandb_name, job_type='train')
+    logger = utils.get_logger(os.path.join(work_dir, "logs"))
+
+    model, tokenizer = load_model_and_tokenizer(cfg)
+    model = model.to(device).eval()
+    logger.info(f"Loaded model dtype {model.dtype}, size {model.num_parameters()}")
+
+    educational_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "educational_instruct")["train"]
+    evol_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "evol_instruct")["train"]
+    mceval_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "mceval_instruct")["train"]
+    package_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "package_instruct")["train"]
+
+    train_dataset = educational_instruct
+
+    tokenized_dataset = train_dataset.map(tokenizer_fn, remove_columns=train_dataset.column_names, batched=False, num_proc=8, desc="Tokenizing dataset")
+    train_loader = DataLoader(tokenized_dataset, batch_size=cfg.training.batch_size, shuffle=True, collate_fn=default_data_collator)
+    logger.info(f"Loaded dataset with {len(tokenized_dataset)} samples")
+
+    policy = PolicyNet(cfg).to(device)
+    logger.info(f"Policy model dtype {policy.dtype}, size {sum(p.numel() for p in policy.parameters())}")
+
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg.optim.lr, weight_decay=cfg.optim.weight_decay)
+    scaler = torch.cuda.amp.GradScaler()
+
+    discrete_timesteps = torch.linspace(0, 1, steps=cfg.sampling.discrete_steps + 2, device=device)[1:-1]
+    discrete_timesteps = discrete_timesteps ** (cfg.sampling.discrete_time_exponent)
+
+    optimize_fn = losses.optimization_manager(cfg)
+    train_step_fn = losses.get_policy_step_fn(None, model.config.mask_token_id + 1, True, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
+    eval_step_fn = losses.get_policy_step_fn(None, model.config.mask_token_id + 1, False, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
+
+    state = dict(optimizer=optimizer, score_model=model, policy_model=policy, scaler=scaler, step=0)
+
+    for epoch in range(cfg.training.n_epoch):
+        for batch in train_loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            loss = train_step_fn(state, batch)
+            if state["step"] % cfg.training.log_freq == 0:
+                logger.info(f"Epoch {epoch}, Step {state['step']}, Loss: {loss.item()}")
+                wandb.log({"loss": loss.item()}, step = state['step'] + len(train_loader) * epoch)
+            if state["step"] % cfg.training.snapshot_freq == 0:
+                utils.save_policy_checkpoint(checkpoint_meta_dir, state)
+                utils.save_policy_checkpoint(os.path.join(checkpoint_dir, f'checkpoint_{state["step"]}.pth'), state)
+
+    wandb.finish()
+
+    ########
+    # example usage
+    if False:
+        query = "Write a function to find the shared elements from the given two lists."
+        prompt = f"""<|im_start|>system
+        You are a helpful assistant.<|im_end|>
+        <|im_start|>user
+        {query.strip()}
+        <|im_end|>
+        <|im_start|>assistant
+        """ ## following the template of qwen; you can also use apply_chat_template function
+
+        TOKEN_PER_STEP = 1 # diffusion timesteps * TOKEN_PER_STEP = total new tokens
+
+        inputs = tokenizer(prompt, return_tensors="pt")
+        input_ids = inputs.input_ids.to(device=device)
+        attention_mask = inputs.attention_mask.to(device=device)
+
+        output = model.diffusion_generate(
+            input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=256,
+            output_history=True,
+            return_dict_in_generate=True,
+            steps=256//TOKEN_PER_STEP,
+            temperature=0.3,
+            top_p=0.95,
+            alg="entropy",
+            alg_temp=0.,
+        )
+        generations = [
+            tokenizer.decode(g[len(p) :].tolist())
+            for p, g in zip(input_ids, output.sequences)
+        ]
+
+        print(generations[0].split('<|dlm_pad|>')[0])

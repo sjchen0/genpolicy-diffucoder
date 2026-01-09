@@ -1,0 +1,58 @@
+ngpus: 4
+tokens: 50257
+outdir: ../output
+pretrained_hf_path: apple/DiffuCoder-7B-Instruct
+
+policy:
+  hidden_size: 3584
+  dtype: bfloat16
+
+training:
+  max_len: 1024
+  batch_size: 4
+  n_epoch: 5
+  snapshot_freq: 100
+  log_freq: 5
+  eval_freq: 100
+  snapshot_freq_for_preemption: 10000
+  accum: 1
+  loss_type: policy_log_loss
+
+data:
+  train: openwebtext
+  valid: wikitext103
+  cache_dir: data
+
+noise:
+  type: loglinear
+  sigma_min: 1e-4
+  sigma_max: 20
+
+sampling:
+  predictor: euler
+  steps: 1024
+  discrete_steps: 16
+  discrete_time_exponent: 0.9
+
+eval:
+  batch_size: 16
+  perplexity: True
+  perplexity_batch_size: 16
+
+optim:
+  weight_decay: 0
+  optimizer: AdamW
+  lr: 3e-4
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+  warmup: 2500
+  grad_clip: 1.
+
+
+hydra:
+  run:
+    dir: ${outdir}/${now:%Y.%m.%d}/${now:%H%M%S}
+  sweep:
+    dir: exp/${now:%Y.%m.%d}/${now:%H%M%S}
+    subdir: ${hydra.job.num}
