@@ -7,14 +7,14 @@ tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
 def apply_chat_template(query, output):
     prompt = f"""<|im_start|>system
-    You are a helpful assistant.<|im_end|>
-    <|im_start|>user
-    {query.strip()}
-    <|im_end|>
-    <|im_start|>assistant
-    {output.strip()}
-    <|im_end|>
-    """
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+{query.strip()}
+<|im_end|>
+<|im_start|>assistant
+{output.strip()}
+<|im_end|>
+"""
     return prompt
 
 def format_example(example):
