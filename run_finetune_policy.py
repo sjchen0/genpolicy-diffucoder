@@ -14,7 +14,7 @@ from datetime import datetime
 import utils
 from data import tokenizer_fn
 
-def load_modified_model_and_tokenizer(cfg):
+def load_customized_model_and_tokenizer(cfg):
     model_path = cfg.pretrained_hf_path
     model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     model = DreamModel(model_config)

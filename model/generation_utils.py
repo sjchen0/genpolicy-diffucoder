@@ -55,8 +55,7 @@ def top_k_logits(logits, top_k=None):
     return logits
 
 
-def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
-
+def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confidence=False, neg_entropy=False, policy=False, policy_args=None):
     if temperature > 0:
         logits = logits / temperature
     if top_p is not None and top_p < 1:
@@ -87,6 +86,14 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         log_probs = torch.log(probs + epsilon)
         confidence = torch.sum(probs * log_probs, dim=-1)
     
+    if policy:
+        # policy_model = load_policy(policy_args["policy_path"], logits.device)
+        policy_model = policy_args["policy_model"]
+        policy_model.eval()
+        with torch.no_grad():
+            full_confidence = policy_model(policy_args["hidden_state"], logits, policy_args["batch_t"])[:,:,1]
+        confidence = full_confidence[policy_args["mask_index"]]
+
     return confidence, x0
 
 
@@ -108,6 +115,7 @@ class DreamGenerationConfig(GenerationConfig):
         self.steps: int = kwargs.pop("steps", 512)
         self.alg: str = kwargs.pop("alg", 'origin')
         self.alg_temp: Optional[float] = kwargs.pop("alg_temp", None)
+        self.policy_model: Optional[Any] = kwargs.pop("policy_model", None)
 
         # Parameters that define the output variables of `generate`
         self.num_return_sequences: int = kwargs.pop("num_return_sequences", 1)
@@ -300,7 +308,6 @@ class DreamGenerationMixin:
         generation_config: Optional[DreamGenerationConfig] = None,
         **kwargs,
     ) -> Union[DreamModelOutput, torch.LongTensor]:
-        print("using local version")
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         generation_config = self._prepare_generation_config(generation_config, **kwargs)
         generation_tokens_hook_func = kwargs.pop("generation_tokens_hook_func", lambda step, x, logits: x)
@@ -381,6 +388,8 @@ class DreamGenerationMixin:
         temperature = generation_config.temperature
         top_p = generation_config.top_p
         top_k = generation_config.top_k
+        use_policy = generation_config.alg == "policy"
+        policy_model = generation_config.policy_model
 
         histories = [] if (return_dict_in_generate and output_history) else None
 
@@ -408,7 +417,11 @@ class DreamGenerationMixin:
         x = generation_tokens_hook_func(None, x, None)
         for i in range(steps):
             mask_index = (x == mask_token_id)
-            logits = self(x, attention_mask, tok_idx).logits
+            if not use_policy:
+                logits = self(x, attention_mask, tok_idx).logits
+            else:
+                out = self(x, attention_mask, tok_idx, output_hidden_states=True, return_dict=True)
+                logits, hidden_state = out.logits, out.hidden_states[-1]
             logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
 
             # this allows user-defined logits control of the intermediate steps
@@ -417,7 +430,8 @@ class DreamGenerationMixin:
             mask_logits = logits[mask_index]
             t = timesteps[i]
             s = timesteps[i + 1]
-        
+            batch_t = torch.full((x.shape[0],), t, device=x.device)
+
             if alg == 'origin':
                 p_transfer = 1 - s / t if i < steps - 1 else 1
                 x0 = torch.zeros_like(x[mask_index], device=self.device, dtype=torch.long) + mask_token_id
@@ -431,18 +445,28 @@ class DreamGenerationMixin:
                     confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True)
                 elif alg == 'entropy':
                     confidence, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True)
+                elif alg == 'policy':
+                    policy_args = dict(policy_model=policy_model, hidden_state=hidden_state, batch_t=batch_t, mask_index=mask_index)
+                    confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, policy=True, policy_args=policy_args)
                 else:
                     raise RuntimeError(f"Unknown alg: {alg}")
                 num_mask_token = mask_index.sum() / mask_index.shape[0]
                 number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else int(num_mask_token)
-                full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
+                if not use_policy:
+                    full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
+                else:
+                    full_confidence = torch.full_like(x, 0., device=self.device, dtype=logits.dtype)
+                confidence = confidence.to(full_confidence.dtype)
                 full_confidence[mask_index] = confidence
                 if number_transfer_tokens > 0:
-                    if alg_temp is None or alg_temp == 0:
-                        _, transfer_index = torch.topk(full_confidence, number_transfer_tokens)
+                    if not use_policy:
+                        if alg_temp is None or alg_temp == 0:
+                            _, transfer_index = torch.topk(full_confidence, number_transfer_tokens)
+                        else:
+                            full_confidence = full_confidence / alg_temp
+                            full_confidence = F.softmax(full_confidence, dim=-1)
+                            transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
                     else:
-                        full_confidence = full_confidence / alg_temp
-                        full_confidence = F.softmax(full_confidence, dim=-1)
                         transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
                     x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()
