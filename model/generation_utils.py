@@ -93,6 +93,11 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         with torch.no_grad():
             full_confidence = policy_model(policy_args["hidden_state"], logits, policy_args["batch_t"])[:,:,1]
         confidence = full_confidence[policy_args["mask_index"]]
+        # discourage padding tokens
+        # pad_mask = x0 == policy_args["pad_token_id"]
+        # # print(pad_mask.sum())
+        # if (~pad_mask).sum() >= policy_args["number_transfer_tokens"]:
+        #     confidence = confidence.masked_fill(pad_mask, 0.)
 
     return confidence, x0
 
@@ -422,7 +427,7 @@ class DreamGenerationMixin:
             else:
                 out = self(x, attention_mask, tok_idx, output_hidden_states=True, return_dict=True)
                 logits, hidden_state = out.logits, out.hidden_states[-1]
-            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1) # TODO: why cancel this shift reduces performance?
 
             # this allows user-defined logits control of the intermediate steps
             logits = generation_logits_hook_func(i, x, logits)
@@ -439,6 +444,8 @@ class DreamGenerationMixin:
                 _, x0[transfer_index_t_s]= sample_tokens(mask_logits[transfer_index_t_s], temperature=temperature, top_p=top_p, top_k=top_k)
                 x[mask_index] = x0.clone()
             else:
+                num_mask_token = mask_index.sum() / mask_index.shape[0]
+                number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else int(num_mask_token)
                 if alg == 'maskgit_plus':
                     confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k)
                 elif alg == 'topk_margin':
@@ -446,12 +453,19 @@ class DreamGenerationMixin:
                 elif alg == 'entropy':
                     confidence, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True)
                 elif alg == 'policy':
-                    policy_args = dict(policy_model=policy_model, hidden_state=hidden_state, batch_t=batch_t, mask_index=mask_index)
+                    policy_args = dict(
+                        policy_model=policy_model, 
+                        hidden_state=hidden_state, 
+                        batch_t=batch_t, 
+                        mask_index=mask_index,
+                        pad_token_id=151667, # self.config.pad_token_id,
+                        number_transfer_tokens=number_transfer_tokens
+                    )
                     confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, policy=True, policy_args=policy_args)
                 else:
                     raise RuntimeError(f"Unknown alg: {alg}")
-                num_mask_token = mask_index.sum() / mask_index.shape[0]
-                number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else int(num_mask_token)
+                # print("confidence:", torch.topk(confidence, k=32))
+                
                 if not use_policy:
                     full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
                 else:
@@ -466,10 +480,16 @@ class DreamGenerationMixin:
                             full_confidence = full_confidence / alg_temp
                             full_confidence = F.softmax(full_confidence, dim=-1)
                             transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
-                    else:
-                        transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
+                    else: # using policy
+                        if alg_temp is None or alg_temp == 0:
+                            _, transfer_index = torch.topk(full_confidence, number_transfer_tokens)
+                        else:
+                            full_confidence = full_confidence.log() / alg_temp
+                            full_confidence = F.softmax(full_confidence, dim=-1)
+                            transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
                     x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()
+                    # print("transfer idx:", transfer_index)
                     row_indices = torch.arange(x.size(0), device=self.device).unsqueeze(1).expand_as(transfer_index)
                     x[row_indices,transfer_index] = x_[row_indices,transfer_index]
 

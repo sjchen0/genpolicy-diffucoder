@@ -10,10 +10,10 @@
 #SBATCH --mail-type=end          # send mail when job ends
 #SBATCH --mail-type=fail         # send mail if job fails
 #SBATCH --mail-user=sc5510@princeton.edu
-#SBATCH --constraint=gpu80
+#SBATCH --constraint=gpu40
 
 module purge
 module load anaconda3/2024.6
 conda activate diffucoder
 
-WANDB_MODE=offline HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 python run_eval.py
+WANDB_MODE=offline HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 python run_demo.py

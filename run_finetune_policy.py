@@ -4,7 +4,7 @@ from transformers import AutoModel, AutoTokenizer, AutoConfig
 from transformers import default_data_collator
 from model.configuration_dream import DreamConfig
 from model.modeling_dream import DreamModel
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from omegaconf import OmegaConf
 from model.policy import PolicyNet
 import losses
@@ -48,14 +48,30 @@ def run(cfg):
     model = model.to(device).eval()
     logger.info(f"Loaded model dtype {model.dtype}, size {model.num_parameters()}")
 
+    keep_columns = ["instruction", "output"]
+
     educational_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "educational_instruct")["train"]
     evol_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "evol_instruct")["train"]
     mceval_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "mceval_instruct")["train"]
     package_instruct = load_dataset("OpenCoder-LLM/opc-sft-stage2", "package_instruct")["train"]
 
+    train_dataset = concatenate_datasets([
+        educational_instruct.remove_columns(list(set(educational_instruct.column_names) - set(keep_columns))),
+        evol_instruct.remove_columns(list(set(evol_instruct.column_names) - set(keep_columns))),
+        mceval_instruct.remove_columns(list(set(mceval_instruct.column_names) - set(keep_columns))),
+        package_instruct.remove_columns(list(set(package_instruct.column_names) - set(keep_columns)))
+    ])
+
     train_dataset = educational_instruct
 
-    tokenized_dataset = train_dataset.map(tokenizer_fn, remove_columns=train_dataset.column_names, batched=False, num_proc=8, desc="Tokenizing dataset")
+    tokenized_dataset = train_dataset.map(
+        tokenizer_fn, 
+        remove_columns=train_dataset.column_names, 
+        batched=False, 
+        num_proc=8, 
+        desc="Tokenizing dataset", 
+        load_from_cache_file=False
+    )
     train_loader = DataLoader(tokenized_dataset, batch_size=cfg.training.batch_size, shuffle=True, collate_fn=default_data_collator)
     logger.info(f"Loaded dataset with {len(tokenized_dataset)} samples")
 
@@ -69,14 +85,17 @@ def run(cfg):
     discrete_timesteps = discrete_timesteps ** (cfg.sampling.discrete_time_exponent)
 
     optimize_fn = losses.optimization_manager(cfg)
-    train_step_fn = losses.get_policy_step_fn(None, model.config.mask_token_id + 1, True, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
-    eval_step_fn = losses.get_policy_step_fn(None, model.config.mask_token_id + 1, False, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
+    special_tokens = dict(mask_token_id = model.config.mask_token_id, pad_token_id=tokenizer.pad_token_id)
+    train_step_fn = losses.get_policy_step_fn(None, special_tokens, True, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
+    eval_step_fn = losses.get_policy_step_fn(None, special_tokens, False, discrete_timesteps, optimize_fn, cfg.training.accum, cfg.training.loss_type)
 
     state = dict(optimizer=optimizer, score_model=model, policy_model=policy, scaler=scaler, step=0)
 
     for epoch in range(cfg.training.n_epoch):
         for batch in train_loader:
             batch = {k: v.to(device) for k, v in batch.items()}
+            if batch["prompt_mask"].sum(dim=-1).max() >= batch["input_ids"].shape[1] - cfg.sampling.discrete_steps - 1:
+                continue
             loss = train_step_fn(state, batch)
             if state["step"] % cfg.training.log_freq == 0:
                 logger.info(f"Epoch {epoch}, Step {state['step']}, Loss: {loss.item()}")

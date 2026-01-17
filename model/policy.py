@@ -32,10 +32,15 @@ class PolicyNet(nn.Module, PyTorchModelHubMixin):
         else:
             self.dtype = torch.bfloat16
         
-    def forward(self, hidden_states, log_score, time):
+    def forward(self, hidden_states, log_score, time, **kwargs):
         # hidden_states: (B, L, h), log_score: (B, L, V+1), time: (B,)
         with torch.cuda.amp.autocast(dtype=self.dtype):
             x = torch.cat([hidden_states, time[:,None,None].repeat(1, hidden_states.shape[1], 1)], dim=-1)
             x = self.mlp(x)
+            # if has this kwargs
+            if "prompt_mask" in kwargs:
+                prompt_mask = kwargs["prompt_mask"] == 1
+                prompt_mask = prompt_mask.unsqueeze(-1)
+                x.masked_fill(prompt_mask, -float("inf"))
             x = F.softmax(x, dim=1)
         return x

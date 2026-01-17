@@ -25,7 +25,7 @@ def Batch_Uniform_Sampler(B, type = 'naive', device = 'cuda'):
         raise ValueError(f"{type} not valid")
     
 
-def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajectories=1, sampling_eps=1e-3, loss_type='lambda_DCE', order = torch.arange(1024)):
+def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_trajectories=2, sampling_eps=1e-3, loss_type='lambda_DCE', order = torch.arange(1024)):
 
     def policy_log_loss_bidirection(score_model, policy_model, batch, cond = None):
         # 1. given a batch, sample multiple trajectories at discrete timesteps 0 < t1 < ... < tK < 1
@@ -33,6 +33,9 @@ def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajecto
         #    evaluate (log_policy_model(x_k) + log_score_model(x_k-1 | x_k)).sum().exp()
         # 3. then aggregate and take negative log
         
+        mask_token_id = special_tokens['mask_token_id']
+        pad_token_id = special_tokens['pad_token_id']
+
         input_ids, attention_mask, prompt_mask = batch["input_ids"], batch["attention_mask"], batch["prompt_mask"]
 
         # broadcast to [B, 1, N, N]
@@ -49,6 +52,7 @@ def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajecto
             policy_model.eval()
 
         total_loss = torch.zeros(input_ids.shape[0], device=input_ids.device)
+        total_loss_raw = torch.zeros(input_ids.shape[0], device=input_ids.device)
         B, L = input_ids.shape
         response_len = L - prompt_mask.sum(dim=-1)
         min_response_len = L - prompt_mask.sum(dim=-1).max()
@@ -61,15 +65,16 @@ def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajecto
             # sample discrete timesteps
             input_ids_km1 = input_ids.clone()
             forward_policy = None
+            x0_hidden_state = None
             for k in range(K):
                 with torch.no_grad():
                     out = score_model(input_ids_km1, attention_mask, output_hidden_states=True, return_dict=True)
                     log_condition, hidden_state = out.logits, out.hidden_states[-1]
+                    x0_hidden_state = hidden_state
 
                 input_ids_t = discrete_timesteps[k] * torch.ones(B, device=input_ids.device)
-                if forward_policy is None:
-                    forward_policy = policy_model(hidden_state, log_condition, input_ids_t)[:,:,0] # (B, L)
-                mask = input_ids_km1 == token_dim - 1
+                forward_policy = policy_model(x0_hidden_state, log_condition, input_ids_t, prompt_mask=prompt_mask)[:,:,0] # (B, L)
+                mask = input_ids_km1 == mask_token_id
                 # TODO: take logical_or with prompt mask
                 mask = torch.logical_or(mask, prompt_mask == 1)
 
@@ -84,16 +89,19 @@ def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajecto
                 ]
                 # forward_indices = torch.zeros((forward_policy.shape[0], num_unmask), dtype=torch.int64, device=forward_policy.device)
                 for b in range(forward_policy.shape[0]):
-                    idx = torch.multinomial(forward_policy[b], nums_unmask[b], replacement=False)
+                    if forward_policy[b].sum() > 0:
+                        idx = torch.multinomial(forward_policy[b], nums_unmask[b], replacement=False)
+                    else:
+                        idx = torch.multinomial(torch.ones_like(forward_policy[b]), nums_unmask[b], replacement=False)
                     # print("sampled indices len:", len(idx), idx)
                     forward_indices_list[b] = idx
                     forward_set[b].scatter_(0, forward_indices_list[b], True)
 
-                log_forward_prob = ((forward_policy + 1e-20).log() * forward_set).mean(-1)
+                log_forward_prob = (((forward_policy + 1e-20).log() - forward_policy.sum(-1, keepdim=True).log()) * forward_set).mean(-1)
                 # import ipdb; ipdb.set_trace()
 
                 input_ids_k = input_ids_km1.clone()
-                input_ids_k[forward_set] = token_dim - 1
+                input_ids_k[forward_set] = mask_token_id
 
                 with torch.no_grad():
                     out = score_model(input_ids_k, attention_mask, output_hidden_states=True, return_dict=True)
@@ -106,29 +114,34 @@ def get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, num_trajecto
                 vocab_probs = torch.cat([soft, torch.ones_like(soft[..., :1])], dim=-1)
 
                 unmasked = (input_ids_k != input_ids_km1).to(vocab_probs.dtype)
+                # EXPERIMENTAL: ignore PADs
+                # unmasked = unmasked * (input_ids_k != pad_token_id).to(unmasked.dtype)
                 target_onehot = F.one_hot(input_ids_km1, num_classes=vocab_probs.shape[-1])
                 vocab_probs = (vocab_probs * target_onehot).sum(-1) # (B, L)
-                policy_out = policy_model(hidden_state, log_condition, input_ids_t)
-                forward_policy = policy_out[:,:,0]
+                policy_out = policy_model(hidden_state, log_condition, input_ids_t, prompt_mask=prompt_mask)
+                
                 backward_policy = policy_out[:,:,1]
 
-                mask = (input_ids_k == token_dim - 1)
+                mask = (input_ids_k == mask_token_id)
                 mask = torch.logical_or(mask, prompt_mask == 1)
                 # backward_policy = backward_policy.masked_fill(mask, -1e9)
                 
                 # backward_policy = F.softmax(backward_policy, dim=-1)
                 # backward_policy = backward_policy.masked_fill(mask, 0.)
 
-                log_step_metric = (((vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log()) * unmasked).mean(-1)
+                log_step_metric = (((vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log() - (0.01 * forward_policy + 1e-20).log()) * unmasked).mean(-1)
+                
+                # forward_policy = policy_out[:,:,0]
                 
                 # REINFORCE unbiased gradient estimate
                 total_loss -= (log_step_metric + (log_step_metric.detach() - log_step_metric.detach().mean()) * log_forward_prob)
+                total_loss_raw -= log_step_metric
 
                 input_ids_km1 = input_ids_k.clone()
 
                 # import ipdb; ipdb.set_trace()
 
-        return total_loss
+        return (total_loss, total_loss_raw)
     
     if loss_type == 'policy_log_loss':
         return policy_log_loss_bidirection
@@ -175,15 +188,17 @@ def optimization_manager(config):
     return optimize_fn
 
 
-def get_policy_step_fn(noise, token_dim, train, discrete_timesteps, optimize_fn, accum, loss_type):
-    policy_loss_fn = get_policy_loss_fn(noise, token_dim, train, discrete_timesteps, loss_type = loss_type)
+def get_policy_step_fn(noise, special_tokens, train, discrete_timesteps, optimize_fn, accum, loss_type):
+    policy_loss_fn = get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, loss_type = loss_type)
 
     accum_iter = 0
     total_loss = 0
+    total_loss_raw = 0
 
     def step_fn(state, batch, cond=None):
         nonlocal accum_iter 
         nonlocal total_loss
+        nonlocal total_loss_raw
 
         score_model = state['score_model']
         policy_model = state['policy_model']
@@ -191,8 +206,10 @@ def get_policy_step_fn(noise, token_dim, train, discrete_timesteps, optimize_fn,
         if train:
             optimizer = state['optimizer']
             scaler = state['scaler']
-            loss = policy_loss_fn(score_model, policy_model, batch, cond=cond).mean() / accum
+            loss_tuple = policy_loss_fn(score_model, policy_model, batch, cond=cond)
             
+            loss, loss_raw = loss_tuple[0].mean() / accum, loss_tuple[1].mean() / accum
+
             # print(loss)
             scaler.scale(loss).backward()
 
@@ -207,6 +224,7 @@ def get_policy_step_fn(noise, token_dim, train, discrete_timesteps, optimize_fn,
 
             accum_iter += 1
             total_loss += loss.detach()
+            total_loss_raw += loss_raw.detach()
             if accum_iter == accum:
                 accum_iter = 0
 
@@ -216,15 +234,20 @@ def get_policy_step_fn(noise, token_dim, train, discrete_timesteps, optimize_fn,
                 optimizer.zero_grad()
                 
                 loss = total_loss
+                loss_raw = total_loss_raw
+
+                total_loss_raw = 0
                 total_loss = 0
         else:
             with torch.no_grad():
                 # ema = state['ema']
                 # ema.store(policy_model.parameters())
                 # ema.copy_to(policy_model.parameters())
-                loss = policy_loss_fn(score_model, policy_model, batch, cond=cond).mean()
+                loss_tuple = policy_loss_fn(score_model, policy_model, batch, cond=cond)
+                loss = loss_tuple[0].mean()
+                loss_raw = loss_tuple[1].mean()
                 # ema.restore(policy_model.parameters())
 
-        return loss
+        return loss_raw
 
     return step_fn
