@@ -56,6 +56,7 @@ def top_k_logits(logits, top_k=None):
 
 
 def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confidence=False, neg_entropy=False, policy=False, policy_args=None):
+    logits_raw = logits.clone()
     if temperature > 0:
         logits = logits / temperature
     if top_p is not None and top_p < 1:
@@ -435,7 +436,7 @@ class DreamGenerationMixin:
                 out = self(x, attention_mask, tok_idx, output_hidden_states=True, return_dict=True)
                 logits, hidden_state = out.logits, out.hidden_states[-1]
                 # EXPERIMENTAL: shift hidden_state by 1
-                hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
+                # hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
             logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1) # why this shift?
 
             # this allows user-defined logits control of the intermediate steps

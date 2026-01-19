@@ -71,7 +71,7 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     out = score_model(input_ids_km1, attention_mask, output_hidden_states=True, return_dict=True)
                     log_condition, hidden_state = out.logits, out.hidden_states[-1]
                     # EXPERIMENTAL: shift hidden_state by 1
-                    hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
+                    # hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
                     x0_hidden_state = hidden_state
 
                 log_condition = torch.cat([log_condition[:,:1], log_condition[:, :-1]], dim=1)
@@ -109,7 +109,7 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     out = score_model(input_ids_k, attention_mask, output_hidden_states=True, return_dict=True)
                     log_condition, hidden_state = out.logits, out.hidden_states[-1]
                     # EXPERIMENTAL: shift hidden_state by 1
-                    hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
+                    # hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
 
                 # reset vocab_probs according to Dream config
                 log_condition = torch.cat([log_condition[:,:1], log_condition[:, :-1]], dim=1)
