@@ -18,8 +18,7 @@ device = f"cuda:{local_rank}"
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 model_path = "apple/DiffuCoder-7B-Instruct"
-policy_path = f"../output/2026.01.10/011727/checkpoints/checkpoint_{ckpt_num}.pth" # trained on educational_instruct
-# policy_path = f"../output/2026.01.13/183509/checkpoints/checkpoint_{ckpt_num}.pth" # trained on all splits
+policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth"
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
 
 model, tokenizer = load_customized_model_and_tokenizer(model_path, dtype="bfloat16")

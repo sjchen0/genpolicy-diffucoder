@@ -17,7 +17,11 @@ device = f"cuda:{local_rank}"
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 model_path = "apple/DiffuCoder-7B-Instruct"
-policy_path = "../output/2026.01.16/061716/checkpoints/checkpoint_100.pth"
+# policy_path = "../output/2026.01.16/061716/checkpoints/checkpoint_100.pth" >>> 0.293 @ 128
+# policy_path = "../output/2026.01.16/172450/checkpoints/checkpoint_200.pth" >>> 0.311 @ 128 
+# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_200.pth" >>> 0.293 @ 128
+policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth"
+
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
 
 model, tokenizer = load_customized_model_and_tokenizer(model_path, dtype="bfloat16")

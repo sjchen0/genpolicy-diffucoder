@@ -91,7 +91,13 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         policy_model = policy_args["policy_model"]
         policy_model.eval()
         with torch.no_grad():
-            full_confidence = policy_model(policy_args["hidden_state"], logits, policy_args["batch_t"])[:,:,1]
+            full_confidence = policy_model(
+                policy_args["hidden_state"],
+                logits,
+                policy_args["batch_t"],
+                mask_index=policy_args["mask_index"],
+                prompt_index=policy_args["prompt_index"],
+            )[:,:,1]
         confidence = full_confidence[policy_args["mask_index"]]
         # discourage padding tokens
         # pad_mask = x0 == policy_args["pad_token_id"]
@@ -400,6 +406,7 @@ class DreamGenerationMixin:
 
         # pad input_ids to max_length
         x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
+        prompt_mask = (x != mask_token_id)
 
         if attention_mask is not None and torch.any(attention_mask == 0.0):
             # we do not mask the [MASK] tokens so value = 1.0
@@ -427,7 +434,9 @@ class DreamGenerationMixin:
             else:
                 out = self(x, attention_mask, tok_idx, output_hidden_states=True, return_dict=True)
                 logits, hidden_state = out.logits, out.hidden_states[-1]
-            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1) # TODO: why cancel this shift reduces performance?
+                # EXPERIMENTAL: shift hidden_state by 1
+                hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
+            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1) # why this shift?
 
             # this allows user-defined logits control of the intermediate steps
             logits = generation_logits_hook_func(i, x, logits)
@@ -458,6 +467,7 @@ class DreamGenerationMixin:
                         hidden_state=hidden_state, 
                         batch_t=batch_t, 
                         mask_index=mask_index,
+                        prompt_index=prompt_mask,
                         pad_token_id=151667, # self.config.pad_token_id,
                         number_transfer_tokens=number_transfer_tokens
                     )

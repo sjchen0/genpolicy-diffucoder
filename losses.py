@@ -70,35 +70,37 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                 with torch.no_grad():
                     out = score_model(input_ids_km1, attention_mask, output_hidden_states=True, return_dict=True)
                     log_condition, hidden_state = out.logits, out.hidden_states[-1]
+                    # EXPERIMENTAL: shift hidden_state by 1
+                    hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
                     x0_hidden_state = hidden_state
 
+                log_condition = torch.cat([log_condition[:,:1], log_condition[:, :-1]], dim=1)
                 input_ids_t = discrete_timesteps[k] * torch.ones(B, device=input_ids.device)
-                forward_policy = policy_model(x0_hidden_state, log_condition, input_ids_t, prompt_mask=prompt_mask)[:,:,0] # (B, L)
                 mask = input_ids_km1 == mask_token_id
-                # TODO: take logical_or with prompt mask
                 mask = torch.logical_or(mask, prompt_mask == 1)
-
-                # forward_policy = forward_policy.masked_fill(mask, -1e9)
-                # forward_policy = F.softmax(forward_policy, dim=-1)
-                forward_policy = forward_policy.masked_fill(mask, 0.)
+                forward_policy = policy_model(
+                    x0_hidden_state,
+                    log_condition,
+                    input_ids_t,
+                    mask_index=(input_ids_km1 == mask_token_id),
+                    prompt_index=(prompt_mask == 1)
+                )[:,:,0] # (B, L)
 
                 forward_set = torch.zeros_like(input_ids, dtype=torch.bool)
                 forward_indices_list = [
                     torch.zeros((nums_unmask[b]), dtype=torch.int64, device=forward_policy.device) 
                     for b in range(forward_policy.shape[0])
                 ]
-                # forward_indices = torch.zeros((forward_policy.shape[0], num_unmask), dtype=torch.int64, device=forward_policy.device)
                 for b in range(forward_policy.shape[0]):
-                    if forward_policy[b].sum() > 0:
-                        idx = torch.multinomial(forward_policy[b], nums_unmask[b], replacement=False)
-                    else:
-                        idx = torch.multinomial(torch.ones_like(forward_policy[b]), nums_unmask[b], replacement=False)
-                    # print("sampled indices len:", len(idx), idx)
+                    idx = torch.multinomial(forward_policy[b], nums_unmask[b], replacement=False)
+                    # if forward_policy[b].sum() > 0:
+                    #     idx = torch.multinomial(forward_policy[b], nums_unmask[b], replacement=False)
+                    # else:
+                    #     idx = torch.multinomial(torch.ones_like(forward_policy[b]), nums_unmask[b], replacement=False)
                     forward_indices_list[b] = idx
                     forward_set[b].scatter_(0, forward_indices_list[b], True)
 
-                log_forward_prob = (((forward_policy + 1e-20).log() - forward_policy.sum(-1, keepdim=True).log()) * forward_set).mean(-1)
-                # import ipdb; ipdb.set_trace()
+                log_forward_prob = ((forward_policy + 1e-20).log() * forward_set).mean(-1)
 
                 input_ids_k = input_ids_km1.clone()
                 input_ids_k[forward_set] = mask_token_id
@@ -106,30 +108,33 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                 with torch.no_grad():
                     out = score_model(input_ids_k, attention_mask, output_hidden_states=True, return_dict=True)
                     log_condition, hidden_state = out.logits, out.hidden_states[-1]
-                
-                # vocab_probs = torch.ones_like(log_condition, dtype=policy_model.module.dtype)
-                # vocab_probs[:,:,:-1] = F.softmax(log_condition[:,:,:-1], dim=-1) # (B, L, V)
+                    # EXPERIMENTAL: shift hidden_state by 1
+                    hidden_state = torch.concat([hidden_state[:, :1], hidden_state[:, :-1]], dim=1)
 
-                soft = F.softmax(log_condition[:,:,:-1], dim=-1)
-                vocab_probs = torch.cat([soft, torch.ones_like(soft[..., :1])], dim=-1)
+                # reset vocab_probs according to Dream config
+                log_condition = torch.cat([log_condition[:,:1], log_condition[:, :-1]], dim=1)
+                vocab_probs = F.softmax(log_condition, dim=-1)
 
                 unmasked = (input_ids_k != input_ids_km1).to(vocab_probs.dtype)
                 # EXPERIMENTAL: ignore PADs
                 # unmasked = unmasked * (input_ids_k != pad_token_id).to(unmasked.dtype)
                 target_onehot = F.one_hot(input_ids_km1, num_classes=vocab_probs.shape[-1])
                 vocab_probs = (vocab_probs * target_onehot).sum(-1) # (B, L)
-                policy_out = policy_model(hidden_state, log_condition, input_ids_t, prompt_mask=prompt_mask)
-                
-                backward_policy = policy_out[:,:,1]
-
                 mask = (input_ids_k == mask_token_id)
                 mask = torch.logical_or(mask, prompt_mask == 1)
-                # backward_policy = backward_policy.masked_fill(mask, -1e9)
+                policy_out = policy_model(
+                    hidden_state,
+                    log_condition,
+                    input_ids_t,
+                    mask_index=(input_ids_k == mask_token_id),
+                    prompt_index=(prompt_mask == 1)
+                )
                 
-                # backward_policy = F.softmax(backward_policy, dim=-1)
-                # backward_policy = backward_policy.masked_fill(mask, 0.)
-
-                log_step_metric = (((vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log() - (0.01 * forward_policy + 1e-20).log()) * unmasked).mean(-1)
+                backward_policy = policy_out[:,:,1]
+                log_step_metric = ((
+                    (vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log()# - (1 * (forward_policy + 1e-20)).log()
+                ) * unmasked).mean(-1)
+                # print(log_step_metric, vocab_probs.min(), backward_policy.min(), forward_policy.min())
                 
                 # forward_policy = policy_out[:,:,0]
                 
