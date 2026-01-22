@@ -87,7 +87,7 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     input_ids_t,
                     mask_index=(input_ids_km1 == mask_token_id),
                     prompt_index=(prompt_mask == 1),
-                    attn_mask=attention_mask.squeeze(1)
+                    attn_mask=attention_mask.squeeze(1)[0]
                 )[:,:,0] # (B, L)
 
                 forward_set = torch.zeros_like(input_ids, dtype=torch.bool)
@@ -132,7 +132,7 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     input_ids_t,
                     mask_index=(input_ids_k == mask_token_id),
                     prompt_index=(prompt_mask == 1),
-                    attn_mask=attention_mask.squeeze(1)
+                    attn_mask=attention_mask.squeeze(1)[0]
                 )
                 
                 backward_policy = policy_out[:,:,1]
