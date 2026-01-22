@@ -20,8 +20,12 @@ model_path = "apple/DiffuCoder-7B-Instruct"
 # policy_path = "../output/2026.01.16/061716/checkpoints/checkpoint_100.pth" >>> 0.293 @ 128
 # policy_path = "../output/2026.01.16/172450/checkpoints/checkpoint_200.pth" >>> 0.311 @ 128 
 # policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_200.pth" >>> 0.293 @ 128
-policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth"
-# policy_path = "../output/2026.01.19/013844/checkpoints/checkpoint_700.pth"
+# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth" >>> 0.16 @ 32
+# policy_path = "../output/2026.01.19/184323/checkpoints/checkpoint_100.pth"
+
+policy_path = "../output/2026.01.18/025924/checkpoints/checkpoint_700.pth" # trained with lambda=1
+policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth" # trained with lambda=0
+policy_path = "../output/2026.01.20/150143/checkpoints/checkpoint_200.pth" # continued with lambda=0.01
 
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
 

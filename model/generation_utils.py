@@ -100,11 +100,8 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
                 prompt_index=policy_args["prompt_index"],
             )[:,:,1]
         confidence = full_confidence[policy_args["mask_index"]]
-        # discourage padding tokens
-        # pad_mask = x0 == policy_args["pad_token_id"]
-        # # print(pad_mask.sum())
-        # if (~pad_mask).sum() >= policy_args["number_transfer_tokens"]:
-        #     confidence = confidence.masked_fill(pad_mask, 0.)
+        # EXPERIMENTAL: perturb confidence with noise
+        # confidence = confidence + torch.rand_like(confidence) * 1e-6
 
     return confidence, x0
 

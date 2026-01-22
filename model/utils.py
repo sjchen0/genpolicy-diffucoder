@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoModel, AutoTokenizer, AutoConfig
 from .modeling_dream import DreamModel
-from .policy import PolicyNet
+from .policy import PolicyNet, PolicyTransformer
 from hydra import initialize, initialize_config_dir, compose
 from pathlib import Path
 

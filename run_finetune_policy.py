@@ -4,15 +4,17 @@ from transformers import AutoModel, AutoTokenizer, AutoConfig
 from transformers import default_data_collator
 from model.configuration_dream import DreamConfig
 from model.modeling_dream import DreamModel
+from model.utils import load_policy
 from datasets import load_dataset, concatenate_datasets
 from omegaconf import OmegaConf
-from model.policy import PolicyNet
+from model.policy import PolicyNet, PolicyTransformer
 import losses
 import wandb
 import os
 from datetime import datetime
 import utils
 from data import tokenizer_fn
+from pathlib import Path
 
 def load_customized_model_and_tokenizer(cfg):
     model_path = cfg.pretrained_hf_path
@@ -75,7 +77,15 @@ def run(cfg):
     train_loader = DataLoader(tokenized_dataset, batch_size=cfg.training.batch_size, shuffle=True, collate_fn=default_data_collator)
     logger.info(f"Loaded dataset with {len(tokenized_dataset)} samples")
 
-    policy = PolicyNet(cfg).to(device)
+    # initialize new policy
+    policy = PolicyTransformer(cfg).to(device)
+
+    # load pre-trained policy
+    # policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth"
+    # policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
+    # policy_weights = torch.load(Path(policy_path), weights_only=False, map_location=device)['policy_model']
+    # policy.load_state_dict(policy_weights)
+
     logger.info(f"Policy model dtype {policy.dtype}, size {sum(p.numel() for p in policy.parameters())}")
 
     optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg.optim.lr, weight_decay=cfg.optim.weight_decay)
@@ -105,40 +115,3 @@ def run(cfg):
                 utils.save_policy_checkpoint(os.path.join(checkpoint_dir, f'checkpoint_{state["step"]}.pth'), state)
 
     wandb.finish()
-
-    ########
-    # example usage
-    if False:
-        query = "Write a function to find the shared elements from the given two lists."
-        prompt = f"""<|im_start|>system
-        You are a helpful assistant.<|im_end|>
-        <|im_start|>user
-        {query.strip()}
-        <|im_end|>
-        <|im_start|>assistant
-        """ ## following the template of qwen; you can also use apply_chat_template function
-
-        TOKEN_PER_STEP = 1 # diffusion timesteps * TOKEN_PER_STEP = total new tokens
-
-        inputs = tokenizer(prompt, return_tensors="pt")
-        input_ids = inputs.input_ids.to(device=device)
-        attention_mask = inputs.attention_mask.to(device=device)
-
-        output = model.diffusion_generate(
-            input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=256,
-            output_history=True,
-            return_dict_in_generate=True,
-            steps=256//TOKEN_PER_STEP,
-            temperature=0.3,
-            top_p=0.95,
-            alg="entropy",
-            alg_temp=0.,
-        )
-        generations = [
-            tokenizer.decode(g[len(p) :].tolist())
-            for p, g in zip(input_ids, output.sequences)
-        ]
-
-        print(generations[0].split('<|dlm_pad|>')[0])

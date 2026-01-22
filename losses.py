@@ -45,6 +45,9 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
         )
         attention_mask = attention_mask.to(torch.bfloat16)
 
+        # EXPERIMENTAL: attending to PAD
+        # attention_mask = None
+
         score_model.eval()
         if train:
             policy_model.train()
@@ -83,7 +86,8 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     log_condition,
                     input_ids_t,
                     mask_index=(input_ids_km1 == mask_token_id),
-                    prompt_index=(prompt_mask == 1)
+                    prompt_index=(prompt_mask == 1),
+                    attn_mask=attention_mask.squeeze(1)
                 )[:,:,0] # (B, L)
 
                 forward_set = torch.zeros_like(input_ids, dtype=torch.bool)
@@ -127,12 +131,13 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     log_condition,
                     input_ids_t,
                     mask_index=(input_ids_k == mask_token_id),
-                    prompt_index=(prompt_mask == 1)
+                    prompt_index=(prompt_mask == 1),
+                    attn_mask=attention_mask.squeeze(1)
                 )
                 
                 backward_policy = policy_out[:,:,1]
                 log_step_metric = ((
-                    (vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log()# - (1 * (forward_policy + 1e-20)).log()
+                    (vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log() #- (0.01 * (forward_policy + 1e-20)).log()
                 ) * unmasked).mean(-1)
                 # print(log_step_metric, vocab_probs.min(), backward_policy.min(), forward_policy.min())
                 

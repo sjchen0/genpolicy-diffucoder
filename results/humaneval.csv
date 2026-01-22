@@ -1,0 +1,17 @@
+name,steps,result@T=0.3,result@T=1,result@T=0
+origin,32,0.2256,0.1158,0.2317
+origin,64,0.2744
+origin,128,0.2683 >> check with 3993128
+origin,256,
+entropy-rand,32,0.1829,0.1524,0.3841
+entropy-greedy,32,,,0.1707
+entropy,64,0.2256
+entropy,128,0.3598
+entropy,256,0.5000
+entropy,512,0.6037
+margin,32,
+margin,64,
+margin,128,
+margin,256,
+policy-rand,32,,,0.1402
+policy-greedy,64,,,0.1463
