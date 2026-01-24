@@ -17,17 +17,24 @@ def load_customized_model_and_tokenizer(model_path, dtype="bfloat16"):
     del hf_model
     return model, tokenizer
 
-def load_policy(policy_ckpt, device, use_init=False):
+def load_policy(policy_ckpt, device, use_init=False, model_class="PolicyNet"):
     if not use_init:
         policy_weights = torch.load(Path(policy_ckpt), weights_only=False, map_location=device)['policy_model']
         config_path = Path(policy_ckpt).parent.parent/".hydra"
         initialize_config_dir(config_dir=str(config_path), version_base=None)
         cfg = compose(config_name="config.yaml")
-        policy_model = PolicyNet(cfg).to(device)
+        if model_class == "PolicyNet":
+            policy_model = PolicyNet(cfg).to(device)
+        elif model_class == "PolicyTransformer":
+            policy_model = PolicyTransformer(cfg).to(device)
         policy_model.load_state_dict(policy_weights)
     else:
         config_path = Path(policy_ckpt).parent.parent/".hydra"
         initialize_config_dir(config_dir=str(config_path), version_base=None)
         cfg = compose(config_name="config.yaml")
-        policy_model = PolicyNet(cfg).to(device)
+        if model_class == "PolicyNet":
+            policy_model = PolicyNet(cfg).to(device)
+        elif model_class == "PolicyTransformer":
+            policy_model = PolicyTransformer(cfg).to(device)
+        policy_model.load_state_dict(policy_weights)
     return policy_model

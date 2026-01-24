@@ -17,20 +17,24 @@ device = f"cuda:{local_rank}"
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 model_path = "apple/DiffuCoder-7B-Instruct"
-# policy_path = "../output/2026.01.16/061716/checkpoints/checkpoint_100.pth" >>> 0.293 @ 128
-# policy_path = "../output/2026.01.16/172450/checkpoints/checkpoint_200.pth" >>> 0.311 @ 128 
-# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_200.pth" >>> 0.293 @ 128
-# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth" >>> 0.16 @ 32
+# policy_path = "../output/2026.01.16/061716/checkpoints/checkpoint_100.pth" # 0.293 @ 128
+# policy_path = "../output/2026.01.16/172450/checkpoints/checkpoint_200.pth" # 0.311 @ 128 
+# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_200.pth" # 0.293 @ 128
+# policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth" # 0.16 @ 32
 # policy_path = "../output/2026.01.19/184323/checkpoints/checkpoint_100.pth"
 
 policy_path = "../output/2026.01.18/025924/checkpoints/checkpoint_700.pth" # trained with lambda=1
 policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth" # trained with lambda=0
-policy_path = "../output/2026.01.20/150143/checkpoints/checkpoint_200.pth" # continued with lambda=0.01
+# policy_path = "../output/2026.01.20/150143/checkpoints/checkpoint_200.pth" # continued with lambda=0.01
+
+# policy_path = "../output/2026.01.22/042044/checkpoints/checkpoint_100.pth" # transformer
+policy_path = "../output/2026.01.23/012812/checkpoints/checkpoint_300.pth" # policy-ref, entropy high, clearance low
+# policy_path = "../output/2026.01.23/041653/checkpoints/checkpoint_400.pth" # policy-ref-supress, entropy low, clearance low
 
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
 
 model, tokenizer = load_customized_model_and_tokenizer(model_path, dtype="bfloat16")
-policy = load_policy(policy_path, device=device)
+policy = load_policy(policy_path, device=device, model_class="PolicyTransformer")
 model.policy_model = policy
 # model = torch.compile(model)
 # policy = torch.compile(policy)

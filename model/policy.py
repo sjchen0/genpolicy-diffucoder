@@ -122,7 +122,8 @@ class RoPEMultiheadAttention(nn.Module):
         self.rope = RotaryEmbedding(self.head_dim)
 
     def forward(self, x, attn_mask=None, key_padding_mask=None):
-        attn_mask = attn_mask.to(torch.bool)
+        if attn_mask is not None:
+            attn_mask = attn_mask.to(torch.bool)
         B, T, D = x.shape
 
         qkv = self.qkv(x)
@@ -225,9 +226,12 @@ class PolicyTransformer(nn.Module, PyTorchModelHubMixin):
                 backward_suppress.unsqueeze(-1).to(hidden_states.dtype),
             ], dim=-1)
             x = self.first_layer(x)
-            x = self.tf(x, attn_mask=kwargs["attn_mask"])
+            if "attn_mask" in kwargs:
+                x = self.tf(x, attn_mask=kwargs["attn_mask"])
+            else:
+                x = self.tf(x)
             x = self.final_layer(x)
             suppress_mask = torch.cat([forward_suppress.unsqueeze(-1), backward_suppress.unsqueeze(-1)], dim=-1)
-            x.masked_fill(suppress_mask, -float("inf"))
+            # x = x.masked_fill(suppress_mask, -float("inf"))
             x = F.softmax(x, dim=1)
         return x

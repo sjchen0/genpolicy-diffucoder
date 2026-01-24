@@ -18,7 +18,8 @@ device = f"cuda:{local_rank}"
 
 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
 model_path = "apple/DiffuCoder-7B-Instruct"
-policy_path = "../output/2026.01.18/192854/checkpoints/checkpoint_700.pth"
+policy_path = "../output/2026.01.18/025924/checkpoints/checkpoint_700.pth"
+policy_path = "../output/2026.01.20/150143/checkpoints/checkpoint_500.pth" # continued with lambda=0.01
 policy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), policy_path)
 
 model, tokenizer = load_customized_model_and_tokenizer(model_path, dtype="bfloat16")
@@ -61,14 +62,14 @@ attention_mask = inputs.attention_mask.to(device=device)
 output = model.diffusion_generate(
     input_ids,
     attention_mask=attention_mask,
-    max_new_tokens=512,
+    max_length=1024,
     output_history=True,
     return_dict_in_generate=True,
-    steps=128,
-    temperature=0.3,
+    steps=16,
+    temperature=0.0,
     top_p=0.95,
     alg="policy",
-    alg_temp=0.,
+    alg_temp=20.0,
     policy_model=policy
 )
 generations = [

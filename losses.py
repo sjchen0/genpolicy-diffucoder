@@ -117,13 +117,17 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
 
                 # reset vocab_probs according to Dream config
                 log_condition = torch.cat([log_condition[:,:1], log_condition[:, :-1]], dim=1)
-                vocab_probs = F.softmax(log_condition, dim=-1)
+                vocab_probs_dist = F.softmax(log_condition, dim=-1)
 
-                unmasked = (input_ids_k != input_ids_km1).to(vocab_probs.dtype)
+                unmasked = (input_ids_k != input_ids_km1).to(vocab_probs_dist.dtype)
                 # EXPERIMENTAL: ignore PADs
                 # unmasked = unmasked * (input_ids_k != pad_token_id).to(unmasked.dtype)
-                target_onehot = F.one_hot(input_ids_km1, num_classes=vocab_probs.shape[-1])
-                vocab_probs = (vocab_probs * target_onehot).sum(-1) # (B, L)
+                
+                # target_onehot = F.one_hot(input_ids_km1, num_classes=vocab_probs_dist.shape[-1])
+                # vocab_probs = (vocab_probs_dist * target_onehot).sum(-1) # (B, L)
+                
+                vocab_probs = vocab_probs_dist.gather(-1, input_ids_km1.unsqueeze(-1)).squeeze(-1)
+                
                 mask = (input_ids_k == mask_token_id)
                 mask = torch.logical_or(mask, prompt_mask == 1)
                 policy_out = policy_model(
@@ -139,6 +143,14 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                 log_step_metric = ((
                     (vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log() #- (0.01 * (forward_policy + 1e-20)).log()
                 ) * unmasked).mean(-1)
+
+                # regularize KL(pi, pi_ref)
+                ref_policy = (vocab_probs_dist * (vocab_probs_dist + 1e-20).log()).sum(-1)
+                # backward_suppress = (prompt_mask == 1) + ~(input_ids_k == mask_token_id)
+                # ref_policy = ref_policy.masked_fill(backward_suppress, -float("inf"))
+                ref_policy = F.softmax(ref_policy, dim=-1)
+                log_step_metric = log_step_metric - 0.1 * (backward_policy * ((backward_policy + 1e-20).log() - (ref_policy + 1e-20).log())).sum(-1)
+
                 # print(log_step_metric, vocab_probs.min(), backward_policy.min(), forward_policy.min())
                 
                 # forward_policy = policy_out[:,:,0]

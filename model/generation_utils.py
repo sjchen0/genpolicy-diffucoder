@@ -92,14 +92,21 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         policy_model = policy_args["policy_model"]
         policy_model.eval()
         with torch.no_grad():
-            full_confidence = policy_model(
+            out = policy_model(
                 policy_args["hidden_state"],
                 logits,
                 policy_args["batch_t"],
                 mask_index=policy_args["mask_index"],
                 prompt_index=policy_args["prompt_index"],
-            )[:,:,1]
+            )
+        full_confidence = out[:,:,1]
+        forward = out[:,:,0]
         confidence = full_confidence[policy_args["mask_index"]]
+        # checking distribution entropy
+        print("backward:", full_confidence.sum().item(), (-(full_confidence+1e-20).log() * full_confidence).sum().item())
+        print("forward:", forward.sum().item(), (-(forward+1e-20).log() * forward).sum().item())
+        print("clearance:", (confidence.sum() / full_confidence.sum()).item())
+        
         # EXPERIMENTAL: perturb confidence with noise
         # confidence = confidence + torch.rand_like(confidence) * 1e-6
 
@@ -495,6 +502,9 @@ class DreamGenerationMixin:
                             full_confidence = full_confidence.log() / alg_temp
                             full_confidence = F.softmax(full_confidence, dim=-1)
                             transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
+                    # checking distribution entropy
+                    # print(full_confidence.sum().item(), (-(full_confidence+1e-20).log() * full_confidence).sum().item())
+
                     x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()
                     # print("transfer idx:", transfer_index)
