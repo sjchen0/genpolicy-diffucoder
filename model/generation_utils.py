@@ -86,7 +86,8 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         epsilon = 1e-10
         log_probs = torch.log(probs + epsilon)
         confidence = torch.sum(probs * log_probs, dim=-1)
-    
+        confidence_prob = F.softmax(confidence, dim=-1)
+
     if policy:
         # policy_model = load_policy(policy_args["policy_path"], logits.device)
         policy_model = policy_args["policy_model"]
@@ -484,7 +485,7 @@ class DreamGenerationMixin:
                 if not use_policy:
                     full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
                 else:
-                    full_confidence = torch.full_like(x, 0., device=self.device, dtype=logits.dtype)
+                    full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
                 confidence = confidence.to(full_confidence.dtype)
                 full_confidence[mask_index] = confidence
                 if number_transfer_tokens > 0:
@@ -499,11 +500,12 @@ class DreamGenerationMixin:
                         if alg_temp is None or alg_temp == 0:
                             _, transfer_index = torch.topk(full_confidence, number_transfer_tokens)
                         else:
-                            full_confidence = full_confidence.log() / alg_temp
+                            confidence = confidence.log() / alg_temp
+                            full_confidence[mask_index] = confidence
                             full_confidence = F.softmax(full_confidence, dim=-1)
                             transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
                     # checking distribution entropy
-                    # print(full_confidence.sum().item(), (-(full_confidence+1e-20).log() * full_confidence).sum().item())
+                    print("decided full confidence:", full_confidence.sum().item(), (-(full_confidence+1e-20).log() * full_confidence).sum().item())
 
                     x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()

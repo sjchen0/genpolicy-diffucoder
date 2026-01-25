@@ -90,6 +90,9 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     attn_mask=attention_mask.squeeze(1)[0]
                 )[:,:,0] # (B, L)
 
+                forward_suppress = (prompt_mask == 1) + (input_ids_km1 == mask_token_id)
+                forward_policy = F.softmax((forward_policy + 1e-20).log().masked_fill(forward_suppress, -float("inf")), dim=-1)
+
                 forward_set = torch.zeros_like(input_ids, dtype=torch.bool)
                 forward_indices_list = [
                     torch.zeros((nums_unmask[b]), dtype=torch.int64, device=forward_policy.device) 
@@ -139,21 +142,28 @@ def get_policy_loss_fn(noise, special_tokens, train, discrete_timesteps, num_tra
                     attn_mask=attention_mask.squeeze(1)[0]
                 )
                 
+                backward_suppress = (prompt_mask == 1) + ~(input_ids_k == mask_token_id)
                 backward_policy = policy_out[:,:,1]
-                log_step_metric = ((
-                    (vocab_probs + 1e-20).log() + (backward_policy + 1e-20).log() #- (0.01 * (forward_policy + 1e-20)).log()
-                ) * unmasked).mean(-1)
 
-                # regularize KL(pi, pi_ref)
+                backward_logpolicy_suppress = F.log_softmax((backward_policy + 1e-20).log().masked_fill(backward_suppress, -float("inf")), dim=-1)
+
+                # log_step_metric = ((
+                #     (vocab_probs + 1e-20).log() + backward_logpolicy_suppress #- (0.01 * (forward_policy + 1e-20)).log()
+                # ) * unmasked).mean(-1)
+
+                term = (vocab_probs + 1e-20).log() + backward_logpolicy_suppress - (forward_policy + 1e-20).log()
+                term = term.masked_fill(~unmasked.bool(), 0.0)
+                log_step_metric = term.mean(-1)
+
+                # regularize KL(pi, pi_ref) and KL(w, uniform) (negative entropy)
                 ref_policy = (vocab_probs_dist * (vocab_probs_dist + 1e-20).log()).sum(-1)
-                # backward_suppress = (prompt_mask == 1) + ~(input_ids_k == mask_token_id)
+                backward_suppress = (prompt_mask == 1) + ~(input_ids_k == mask_token_id)
                 # ref_policy = ref_policy.masked_fill(backward_suppress, -float("inf"))
                 ref_policy = F.softmax(ref_policy, dim=-1)
-                log_step_metric = log_step_metric - 0.1 * (backward_policy * ((backward_policy + 1e-20).log() - (ref_policy + 1e-20).log())).sum(-1)
 
-                # print(log_step_metric, vocab_probs.min(), backward_policy.min(), forward_policy.min())
-                
-                # forward_policy = policy_out[:,:,0]
+                kl_reg = (backward_policy * ((backward_policy + 1e-20).log() - (ref_policy + 1e-20).log()) + forward_policy * (forward_policy + 1e-20).log()).sum(-1)
+
+                log_step_metric = log_step_metric - 0.05 * kl_reg
                 
                 # REINFORCE unbiased gradient estimate
                 total_loss -= (log_step_metric + (log_step_metric.detach() - log_step_metric.detach().mean()) * log_forward_prob)

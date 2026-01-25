@@ -16,4 +16,4 @@ module purge
 module load anaconda3/2024.6
 conda activate diffucoder
 
-WANDB_MODE=offline HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 python run_eval.py
+WANDB_MODE=offline HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 python run_eval.py --task mbpp --steps 64 --alg entropy --alg_temp 1.0
