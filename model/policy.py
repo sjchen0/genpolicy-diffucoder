@@ -143,7 +143,7 @@ class RoPEMultiheadAttention(nn.Module):
         attn = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
 
         if attn_mask is not None:
-            attn = attn.masked_fill(attn_mask, -float("inf"))
+            attn = attn.masked_fill(~attn_mask, -float("inf"))
 
         if key_padding_mask is not None:
             attn = attn.masked_fill(
@@ -226,10 +226,11 @@ class PolicyTransformer(nn.Module, PyTorchModelHubMixin):
                 backward_suppress.unsqueeze(-1).to(hidden_states.dtype),
             ], dim=-1)
             x = self.first_layer(x)
-            if "attn_mask" in kwargs:
-                x = self.tf(x, attn_mask=kwargs["attn_mask"])
-            else:
-                x = self.tf(x)
+            x = self.tf(x)
+            # if "attn_mask" in kwargs:
+            #     x = self.tf(x, attn_mask=kwargs["attn_mask"])
+            # else:
+            #     x = self.tf(x)
             x = self.final_layer(x)
             suppress_mask = torch.cat([forward_suppress.unsqueeze(-1), backward_suppress.unsqueeze(-1)], dim=-1)
             # x = x.masked_fill(suppress_mask, -float("inf"))
